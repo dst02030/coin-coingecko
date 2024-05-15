@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS coingecko.trending_coins (
+    _ts timestamptz NOT NULL,
+    id VARCHAR(255) NOT NULL,
+    coin_id INT NOT NULL, 
+    name VARCHAR NOT NULL, 
+    symbol VARCHAR NOT NULL,
+    market_cap_rank INT,
+    thumb VARCHAR NOT NULL,
+    small VARCHAR NOT NULL,
+    large VARCHAR NOT NULL,
+    slug VARCHAR NOT NULL,
+    price_btc Numeric NOT NULL,
+    score SMALLINT NOT NULL,
+    price Numeric NOT NULL,
+    price_change_percentage_24h JSON NOT NULL,
+    market_cap VARCHAR NOT NULL,
+    market_cap_btc NUMERIC NOT NULL,
+    total_volume VARCHAR NOT NULL,
+    total_volume_btc NUMERIC NOT NULL,
+    sparkline VARCHAR NOT NULL,
+    content JSON,
+    PRIMARY KEY (_ts, id)
+);

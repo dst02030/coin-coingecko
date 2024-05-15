@@ -1,0 +1,125 @@
+base_url: https://api.coingecko.com/api/v3/coins/
+
+
+data:
+    coins_markets:
+        url: coins/markets
+        params:
+            vs_currency: usd
+            order: market_cap_desc
+            per_page: 250 
+        rename:
+            index: 시총대비거래량순위
+            symbol: 티커
+            current_price: 현재가
+            market_cap: 시총
+            market_cap_rank: 시총순위
+            total_volume: 거래량
+            volume_rank: 거래량순위
+        max_pages: 50
+        schema_name: coingecko
+        table_name: daily_coin_info
+
+    coins_list:
+        url: coins/list
+        params:
+            include_platform: "true"
+        schema_name: coingecko
+        table_name: coin_list
+
+    asset_platforms:
+        url: asset_platforms
+        schema_name: coingecko
+        table_name: asset_platforms
+
+    # categories
+    categories_list:
+        url: coins/categories/list
+        schema_name: coingecko
+        table_name: categories_list
+        
+    categories:
+        url: coins/categories
+        schema_name: coingecko
+        table_name: categories
+
+    # exchanges
+    exchanges:
+        url: exchanges
+        params:
+            per_page: 250
+        max_pages: 50
+        schema_name: coingecko
+        table_name: exchanges
+    
+    exchanges_list:
+        url: exchanges/list
+        schema_name: coingecko
+        table_name: exchanges_list
+
+    # derivatives
+    derivatives:
+        url: derivatives
+        schema_name: coingecko
+        table_name: derivatives
+
+    derivatives_exchanges:
+        url: derivatives/exchanges
+        params:
+            per_page: 250
+        max_pages: 50
+        schema_name: coingecko
+        table_name: derivatives_exchanges
+
+    derivatives_exchanges_list:
+        url: derivatives/exchanges/list
+        schema_name: coingecko
+        table_name: derivatives_exchanges_list
+
+    # nfts
+    nfts_list:
+        url: nfts/list
+        params:
+            per_page: 250
+        max_pages: 50
+        schema_name: coingecko
+        table_name: nfts_list
+
+    # trending
+    trending:
+        url: search/trending
+        data:
+            coins:
+                json_cols: [price_change_percentage_24h, content]
+                schema_name: coingecko
+                table_name: trending_coins
+            nfts:
+                json_cols: [content]
+                schema_name: coingecko
+                table_name: trending_nfts
+            categories:
+                json_cols: [market_cap_change_percentage_24h]
+                schema_name: coingecko
+                table_name: trending_categories
+    
+    # global
+    global:
+        url: global
+        schema_name: coingecko
+        table_name: global
+
+    # companies
+    companies_treasury:
+        url: companies/public_treasury
+        coin_list: [bitcoin, ethereum]
+        rename:
+            total_holdings: total_companies_holdings
+            total_value_usd: total_companies_value_usd
+            market_cap_dominance: total_companies_market_cap_dominance
+        company_rename:
+            total_holdings: company_holdings
+            total_entry_value_usd: company_entry_value_usd
+            total_current_value_usd: company_current_value_usd
+            percentage_of_total_supply: percentage_of_company_supply
+        schema_name: coingecko
+        table_name: companies_treasury
