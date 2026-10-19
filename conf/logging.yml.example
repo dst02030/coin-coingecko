@@ -1,7 +1,7 @@
 logging:
-    file_name: {LOG-PATH}/coingecko.log
+    file_name: logs/coingecko.log
     when: midnight
     interval: 1
     format: '%(asctime)s (%(filename)s %(lineno)d) %(levelname)s ::: %(message)s'
-    level: logging.INFO
+    level: INFO
     backupCount: 5

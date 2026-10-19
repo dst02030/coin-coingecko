@@ -1,1 +1,2 @@
-CREATE DATABASE IF NOT EXISTS coins DEFAULT CHARSET=utf8 COLLATE=utf8_bin;
+-- Run once from a PostgreSQL maintenance database if needed.
+CREATE DATABASE coins;

@@ -118,3 +118,12 @@ data/*
 nohup.out
 reference/
 
+
+# Local credentials and generated collection files
+conf/credentials*
+.env.*
+*.pem
+*.key
+*.csv
+
+!conf/credentials.example

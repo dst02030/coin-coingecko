@@ -1,227 +1,150 @@
+"""Configuration, Discord delivery and transactional PostgreSQL access."""
 import logging
-import yaml
-
-import requests
-import json
+import re
 
 import pandas as pd
-
-from datetime import date, datetime
-from sqlalchemy import create_engine
-from jinja2 import Template
-from urllib.parse import quote
-
+import requests
+import yaml
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import URL
+from sqlalchemy.dialects.postgresql import insert
 
 logger = logging.getLogger(__name__)
 
-def get_jinja_yaml_conf(*file_names):
-    """
-    jinja2 포맷을 이용해서 yaml 파일을 읽는 함수입니다.
-    
-    Args:
-        file_name: 읽을 파일 이름입니다.
-    
-    Returns: 
-        conf_dict: 파일을 읽어낸 결과입니다.
-    """
 
-    conf_dict = dict()
-
+def load_config(*file_names):
+    config = {}
     for file_name in file_names:
-
-        with open(file_name, encoding='utf-8') as f:
-            t = Template(f.read())
-            c = yaml.safe_load(t.render())
-            def_conf = yaml.safe_load(t.render(c))
-            conf_dict.update(def_conf)
-            
-    return conf_dict
+        with open(file_name, encoding="utf-8") as stream:
+            config.update(yaml.safe_load(stream) or {})
+    return config
 
 
-# 디스코드 웹훅에 메시지 보내기
+# Keep existing notebook imports working without requiring Jinja2.
+get_jinja_yaml_conf = load_config
+
+
 def send_message_to_discord(url, msg):
-    
-    message = {
-        "content": msg
-    }
-
-    headers = {
-        "Content-Type": "application/json"
-    }
-
-    response = requests.post(url, data=json.dumps(message), headers=headers)
-
-    if response.status_code == 204:
-        logger.info("메시지가 성공적으로 전송되었습니다.")
-    else:
-        logger.error(f"에러 발생: {response.status_code}")
-        logger.error(response.text)
-
+    response = requests.post(url, json={"content": msg}, timeout=30)
+    if not response.ok:
+        # Do not include the response/request URL: it contains the webhook token.
+        raise RuntimeError(f"Discord delivery failed (HTTP {response.status_code})")
+    logger.info("Discord message delivered")
 
 
 def create_db_engine(engine_info):
-    """
-    DB 엔진을 만드는 함수입니다.
+    url = URL.create(
+        drivername=engine_info["DB_TYPE"], username=engine_info["DB_USER"],
+        password=engine_info["DB_PASSWORD"], host=engine_info["DB_HOST"],
+        port=int(engine_info["DB_PORT"]), database=engine_info["DB_NAME"],
+    )
+    return create_engine(url, client_encoding="utf8")
 
-    Args:
-        engine_info: DB 정보를 포함한 딕셔너리 입니다. DB_TYPE, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME 정보를 포함해야 합니다.
 
-    Returns:
-        engine: 생성된 DB 엔진입니다.
-    """
-    engine_info = {key: quote(val) for key, val in engine_info.items()}
-    conn_str = "{DB_TYPE}://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}".format(**engine_info)
-    engine = create_engine(conn_str, client_encoding='utf8')
-    logger.info(f'Connect to {engine_info["DB_HOST"]}. DB_NAME is {engine_info["DB_NAME"]}')
-    return engine
+def _identifier(name):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return f'"{name}"'
+
+
+def _columns(columns):
+    if isinstance(columns, str):
+        columns = [columns]
+    return ", ".join(_identifier(c) for c in columns) if columns else "*"
 
 
 class Postgres_connect:
-
     def __init__(self, engine):
         self.engine = engine
-        return
 
-    def get_data(self, schema_name, table_name, columns = [], where = [], where_operator = 'AND', additional_sql = "", is_distinct = False, orderby_cols = []):
-        columns = [columns] if isinstance(columns, str) else columns
-        
-        if len(columns) == 0:
-            columns = ['*']
-        
-        where_clause = self._make_where(where, where_operator)
-        sql = f"""SELECT {"DISTINCT" if is_distinct else ""} {', '.join(columns)} 
-                                FROM {schema_name}.{table_name} {where_clause}""" + additional_sql
-        
-        data = pd.read_sql(sql, con = self.engine
-                                )
-
-        logger.debug(sql)
-
+    def get_data(self, schema_name, table_name, columns=None, where=None,
+                 where_operator="AND", additional_sql="", is_distinct=False,
+                 orderby_cols=None):
+        sql = (f"SELECT {'DISTINCT ' if is_distinct else ''}{_columns(columns)} "
+               f"FROM {_identifier(schema_name)}.{_identifier(table_name)} "
+               f"{self._make_where(where, where_operator)} {additional_sql}")
         if orderby_cols:
-            orderby_cols = [orderby_cols] if isinstance(orderby_cols, str) else orderby_cols
-            data.sort_values(by = orderby_cols, ignore_index = True, inplace = True)
+            sql += f" ORDER BY {_columns(orderby_cols)}"
+        return pd.read_sql(sql, con=self.engine)
 
+    def get_maxmin_col(self, schema_name, table_name, column, where=None,
+                       where_operator="AND", additional_sql="", is_max=True, is_min=True):
+        if not (is_max or is_min):
+            raise ValueError("Select at least one of is_max or is_min")
+        values = [f"{op}({_identifier(column)})" for op, enabled
+                  in [("MAX", is_max), ("MIN", is_min)] if enabled]
+        sql = (f"SELECT {', '.join(values)} FROM {_identifier(schema_name)}."
+               f"{_identifier(table_name)} {self._make_where(where, where_operator)} {additional_sql}")
+        return pd.read_sql(sql, con=self.engine).to_numpy().ravel()
 
-        return data
+    def get_count(self, schema_name, table_name, where=None,
+                  where_operator="AND", additional_sql=""):
+        sql = (f"SELECT COUNT(*) FROM {_identifier(schema_name)}.{_identifier(table_name)} "
+               f"{self._make_where(where, where_operator)} {additional_sql}")
+        return int(pd.read_sql(sql, con=self.engine).iloc[0, 0])
 
-
-    
-
-    def get_maxmin_col(self, schema_name, table_name, column, where = [], where_operator = 'AND', additional_sql = "", is_max = True, is_min = True):
-        if not is_max and not is_min:
-            raise Exception("You should set True at least one of is_min or is_max.")
-
-        where_clause = self._make_where(where, where_operator)
-        maxmin = []
-        if is_max: maxmin.append(f"MAX({column})")
-        if is_min: maxmin.append(f"MIN({column})")
-
-        sql = f"""SELECT {", ".join(maxmin)} 
-                                FROM {schema_name}.{table_name} {where_clause}""" + additional_sql
-        logger.debug(sql)
-
-        return pd.read_sql(sql, con = self.engine
-                                ).to_numpy().ravel()
-
-    
-
-    def get_count(self, schema_name, table_name, where = [], where_operator = 'AND', additional_sql = ""):
-        where_clause = self._make_where(where, where_operator)
-        sql = f"SELECT COUNT(*) FROM {schema_name}.{table_name} {where_clause}" + additional_sql
-        data = pd.read_sql(sql, con = self.engine
-                                ).iloc[0].item()
-        logger.debug(sql)
-        return int(data)
-    
-    
-    
     def insert_df(self, data, schema_name, table_name):
-        data.to_sql(con = self.engine,
-                schema = schema_name,
-                name = table_name,
-                if_exists = 'append',
-                index = False)
-        
-        logger.info(f"Upload data successfully (rows: {data.shape[0]}).")
-        
-        
-        
-    
-    def upsert(self, data, schema_name, table_name, del_rows = 1000):
+        if data.empty:
+            return 0
+        with self.engine.begin() as connection:
+            return data.to_sql(table_name, schema=schema_name, con=connection,
+                               if_exists="append", index=False, chunksize=1000)
 
-        # 해당 테이블의 pkey constraint 이름 찾기
-        pkey_constraint = pd.read_sql(sql = f"""SELECT constraint_name
-        FROM information_schema.table_constraints
-        WHERE table_schema = '{schema_name}' AND table_name = '{table_name}' AND constraint_type = 'PRIMARY KEY'""",
-            con = self.engine)
-        
-        if pkey_constraint.shape[0] == 0:
-            logger.info(f"Upload data starts: {data.shape[0]} rows.")
-            return data.to_sql(table_name, schema = schema_name, con = self.engine, index = False, if_exists = "append")
+    def upsert(self, data, schema_name, table_name, del_rows=1000):
+        """Insert/update rows atomically; never delete committed rows first."""
+        if del_rows < 1:
+            raise ValueError("Chunk size must be positive")
+        if data.empty:
+            return 0
+        with self.engine.begin() as connection:
+            primary_keys = inspect(connection).get_pk_constraint(
+                table_name, schema=schema_name)["constrained_columns"]
+            frame = data.drop_duplicates(primary_keys, keep="last") if primary_keys else data
 
-        else:
-            pkey_constraint = pkey_constraint.iloc[0, 0]
+            def write_chunk(table, conn, keys, data_iter):
+                rows = [dict(zip(keys, row)) for row in data_iter]
+                statement = insert(table.table).values(rows)
+                if primary_keys:
+                    updates = {key: statement.excluded[key] for key in keys
+                               if key not in primary_keys}
+                    if updates:
+                        statement = statement.on_conflict_do_update(
+                            index_elements=primary_keys, set_=updates)
+                    else:
+                        statement = statement.on_conflict_do_nothing(index_elements=primary_keys)
+                return conn.execute(statement).rowcount
 
-        # 해당 테이블의 primary key 리스트
-        pkey_cols = pd.read_sql(f"""SELECT column_name
-        FROM information_schema.key_column_usage
-        WHERE table_schema = '{schema_name}' AND table_name = '{table_name}' AND constraint_name = '{pkey_constraint}';""",
-                con = self.engine).to_numpy().ravel()
-        
-        # db 내에 pkey 중복 데이터 제거를 위한 where문 생성
-        in_list = list()
-        for _, row in data[pkey_cols].iterrows():
-            row_processing = [val.replace("'", "''").replace('%', '%%') if isinstance(val, str) else val for val in row.values]
-            row_processing = [f"'{val}'" if isinstance(val, (str, date, datetime)) else str(val) for val in row_processing]
-            in_list.append(f"({', '.join(row_processing)})")
-        
-        
-        # delete문을 통해 중복 데이터 제거
-        for i in range(len(in_list) // del_rows + 1):
-            with self.engine.begin() as conn:
-                del_list = in_list[i*del_rows:(i+1)*del_rows]
-                where_clause = f"WHERE ({', '.join(pkey_cols)}) IN ({', '.join(del_list)})"
+            return frame.to_sql(table_name, schema=schema_name, con=connection,
+                                index=False, if_exists="append", chunksize=del_rows,
+                                method=write_chunk)
 
-                del_sql = f"""DELETE FROM {schema_name}.{table_name}
-                                            {where_clause}"""
-
-                if len(del_list) > 0:
-                    logger.debug(del_sql)
-                    conn.exec_driver_sql(del_sql)
-
-        logger.info(f"Upload data starts: {data.shape[0]} rows.")
-        
-        # 데이터 업로드
-        return data.to_sql(table_name, schema = schema_name, con = self.engine, index = False, if_exists = "append")
-    
-
-    
-    def ext_notin_db(self, data, schema_name, table_name,  subset = []):
-
-        if isinstance(subset, str):
-            subset = [subset]
-        
-        if len(subset) == 0:
-            subset = data.columns.tolist()
-
-
-        db_data = self.get_data(schema_name = schema_name, 
-                        table_name = table_name, 
-                        columns = subset,
-                        is_distinct = True)
-        
-        coltype = db_data.dtypes
-        coltype[coltype =='object'] = str
-        data = data.astype(coltype)
-
-        merge_data = pd.merge(data, db_data, how = 'outer', on = subset, indicator = True)
-        
-
-        return merge_data[merge_data['_merge'] == 'left_only'].drop(columns = '_merge')
-    
+    def ext_notin_db(self, data, schema_name, table_name, subset=None):
+        subset = [subset] if isinstance(subset, str) else list(subset or data.columns)
+        existing = self.get_data(schema_name, table_name, columns=subset, is_distinct=True)
+        return data.merge(existing, how="left", on=subset, indicator=True).query(
+            "_merge == 'left_only'").drop(columns="_merge")
 
     def get_engine(self):
         return self.engine
 
-    def _make_where(self, where, where_operator = 'AND'):
-        return f"WHERE {f' {where_operator} '.join(where)}" if where else ""
+    @staticmethod
+    def _make_where(where, where_operator="AND"):
+        if where_operator not in {"AND", "OR"}:
+            raise ValueError("where_operator must be AND or OR")
+        clauses = [where] if isinstance(where, str) else where
+        return f"WHERE {f' {where_operator} '.join(clauses)}" if clauses else ""
+
+
+def load_credentials(file_name):
+    """Source the same trusted local shell file used by run.sh."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    script = 'set -ae; source "$1"; "$2" -c \'import json, os; print(json.dumps(dict(os.environ)))\''
+    result = subprocess.run(
+        ["bash", "-c", script, "load-credentials", str(file_name), sys.executable],
+        check=True, capture_output=True, text=True,
+    )
+    os.environ.update(json.loads(result.stdout))

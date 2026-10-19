@@ -1,87 +1,66 @@
+"""CoinGecko HTTP access and tabular pagination."""
 import logging
-import json
-import requests
-import io
-import os
 import time
-import zipfile
+from datetime import datetime
 
-
-import numpy as np
 import pandas as pd
-
-from io import BytesIO
-from datetime import datetime, timedelta
+import requests
 
 logger = logging.getLogger(__name__)
 
 
-
-
 class Coingecko:
-    def __init__(self, base_url = None, auth_key = None):
-        logger.info(f"### Coingecko main api is initialized! ###")
-        self.base_url = base_url if base_url else 'https://api.coingecko.com/api/v3'
-        self.auth_key = auth_key = None
-        self.headers = {'x-cg-pro-api-key': auth_key} if auth_key else None
+    def __init__(self, base_url=None, auth_key=None, timeout=30):
+        self.base_url = (base_url or "https://api.coingecko.com/api/v3").rstrip("/")
+        self.auth_key = auth_key
+        self.headers = {"x-cg-pro-api-key": auth_key} if auth_key else {}
+        self.timeout = timeout
 
+    def get_api_data(self, detail_url="", params=None, max_retries=30, sleep=60):
+        if max_retries < 1 or sleep < 0:
+            raise ValueError("max_retries must be positive and sleep nonnegative")
+        url = f"{self.base_url}/{detail_url.lstrip('/')}"
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, params=dict(params or {}),
+                                        headers=self.headers, timeout=self.timeout)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == max_retries - 1:
+                    raise
+            else:
+                if response.status_code != 429 and response.status_code < 500:
+                    response.raise_for_status()
+                    return response
+                if attempt == max_retries - 1:
+                    response.raise_for_status()
+            logger.warning("Request failed for %s; retry %s/%s", detail_url,
+                           attempt + 1, max_retries)
+            time.sleep(sleep)
 
+    def get_data(self, detail_url, params=None, _ts=None, rename=None,
+                 sleep=60, max_retries=30):
+        payload = self.get_api_data(detail_url, params, sleep=sleep,
+                                    max_retries=max_retries).json()
+        data = pd.DataFrame(payload)
+        if not data.empty:
+            data["_ts"] = _ts if _ts is not None else datetime.now().astimezone()
+        return data.rename(columns=rename) if rename else data
 
-    def get_api_data(self, detail_url = '', params = {}, max_retries = 30, sleep = 60):
-        tries = 0
-        
-        url = f"{self.base_url}/{detail_url}"
-        query_url = "&".join([f"{key}={val}" for key, val in params.items()])
-    
-        url += f"?{query_url}" if len(query_url) > 0 else ""
-
-        while tries < max_retries:
-            tries += 1
-            res = requests.get(url, headers = self.headers)
-            
-            if not res.ok:
-                if res.status_code != 429:
-                    logger.warning(f"There is some error in {detail_url}, params: {params}")
-                    logger.warning(content)
-                    res.raise_for_status()
-
-                logger.info(f"Exceeded api call rate limit. API call now tries: {tries}/{max_retries}; sleep {sleep} secs.")
-                logger.info(res.text)
-                time.sleep(sleep)
-                continue
-            
-            return res
-
-        logger.error(f"Exceeded {max_retries} retries. Please try again.")
-        res.raise_for_status()
-    
-    def get_data(self, detail_url, params = {}, _ts = datetime.astimezone(datetime.now()), rename = None, sleep = 60, max_retries = 30):
-        data = pd.DataFrame()
-        
-        data = pd.DataFrame(json.loads(self.get_api_data(detail_url, params, sleep = sleep, max_retries = max_retries).text
-                                      )
-                           )
-            
-        if data.shape[0] == 0:
-            return pd.DataFrame()
-        
-        data['_ts'] = _ts
-
-        if rename:
-            data = data.rename(columns = rename)
-        
-        return data
-    
-    def get_page_data(self, detail_url = 'coins/markets', start_pages = 1, end_pages = 10, params = {}, rename = None, sleep = 700, max_retries = 3):
-        data = pd.DataFrame()
-        for page in range(start_pages, end_pages+1):
-            logger.info(f"Get data ({page}/{end_pages})...")
-            params['page'] = page
-            this_data = self.get_data(detail_url, params, rename = rename, sleep = sleep, max_retries = max_retries)
-            if this_data.shape[0] == 0:
-                logger.warning(f"There is no data in {page} page. Skip residual pages.")
+    def get_page_data(self, detail_url="coins/markets", start_pages=1,
+                      end_pages=10, params=None, rename=None, sleep=500,
+                      max_retries=10):
+        if not 1 <= start_pages <= end_pages:
+            raise ValueError("Require 1 <= start_pages <= end_pages")
+        frames = []
+        timestamp = datetime.now().astimezone()
+        for page in range(start_pages, end_pages + 1):
+            page_params = {**(params or {}), "page": page}
+            logger.info("Get data (%s/%s)", page, end_pages)
+            frame = self.get_data(detail_url, page_params, _ts=timestamp,
+                                  rename=rename, sleep=sleep, max_retries=max_retries)
+            if frame.empty:
                 break
-            data = pd.concat([data, this_data])
-        return data
-    
-  
+            frames.append(frame)
+            if len(frame) < int(page_params.get("per_page", 0)):
+                break
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

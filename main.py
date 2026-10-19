@@ -1,92 +1,67 @@
+"""Run one configured collection job."""
+import argparse
 import logging
-import requests
-import json
 import os
-import time
-import pandas as pd
-import numpy as np
-
-import requests
-import sys
-from datetime import datetime, timedelta, date
 from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 from src.api import Coingecko
-from src.utils import get_jinja_yaml_conf, create_db_engine, Postgres_connect, send_message_to_discord
-from src.processing import *
+from src import processing
+from src.utils import load_config, create_db_engine, Postgres_connect
 
-def main():
-    os.chdir(os.path.dirname(__file__))
-    conf = get_jinja_yaml_conf('./conf/webhook.yml', './conf/logging.yml', './conf/data.yml')
+ROOT = Path(__file__).resolve().parent
+HANDLERS = {
+    "coins_markets": processing.upload_coins_markets,
+    "coins_list": processing.upload_coin_list,
+    "asset_platforms": processing.upload_asset_platforms,
+    "categories_list": processing.upload_categories_list,
+    "categories": processing.upload_categories,
+    "exchanges_list": processing.upload_exchanges_list,
+    "exchanges": processing.upload_exchanges,
+    "derivatives": processing.upload_derivatives,
+    "derivatives_exchanges": processing.upload_derivatives_exchanges,
+    "derivatives_exchanges_list": processing.upload_derivatives_exchanges_list,
+    "trending": processing.upload_trending,
+    "global": processing.upload_global,
+    "nfts_list": processing.upload_nfts_list,
+    "companies_treasury": processing.upload_companies_treasury,
+}
 
 
-
-    # logger 설정
-    logger = logging.getLogger(__name__)
-    logging.basicConfig(level=eval(conf['logging']['level']),
-        format=conf['logging']['format'],
-        handlers = [TimedRotatingFileHandler(filename =  conf['logging']['file_name'],
-                                    when=conf['logging']['when'],
-                                    interval=conf['logging']['interval'],
-                                    backupCount=conf['logging']['backupCount']), logging.StreamHandler()]
-                    )
-
-
-
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=HANDLERS)
+    args = parser.parse_args(argv)
+    conf = load_config(*(ROOT / "conf" / name for name in
+                         ("webhook.yml", "logging.yml", "data.yml")))
+    log = conf["logging"]
+    log_path = Path(log["file_name"])
+    if not log_path.is_absolute():
+        log_path = ROOT / log_path
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=log["level"].removeprefix("logging."), format=log["format"],
+        handlers=[TimedRotatingFileHandler(log_path, when=log["when"],
+                  interval=log["interval"], backupCount=log["backupCount"]),
+                  logging.StreamHandler()],
+    )
+    api = Coingecko(auth_key=os.environ.get("COINGECKO_API_KEY") or os.environ.get("api_key"),
+                    base_url=os.environ.get("COINGECKO_BASE_URL"))
     engine = create_db_engine(os.environ)
-    postgres_conn = Postgres_connect(engine)
-    gecko_api = Coingecko()
-    
-    if sys.argv[1] in conf['data']:
-        logger.info(f"Run {sys.argv[1]}!")
-    
-    else:
-        raise Exception(f"You entered not allowed run mode. Run modes are: {list(conf['data'].keys())}")
-    
-    
-    if sys.argv[1] == 'coins_markets':
-        webhook_coins_markets(gecko_api, conf['data']['coins_markets'], conf['webhook'])
-        upload_coins_markets(postgres_conn, gecko_api, conf['data']['coins_markets'])
+    try:
+        db = Postgres_connect(engine)
+        job_conf = conf["data"][args.mode]
+        if args.mode == "coins_markets":
+            data = processing.preprocessing_coins_markets(api.get_page_data(
+                detail_url=job_conf["url"], params=job_conf["params"],
+                end_pages=job_conf["max_pages"]))
+            processing.upload_coins_markets(db, api, job_conf, data=data)
+            processing.webhook_coins_markets(api, job_conf, conf["webhook"], data=data)
+        else:
+            HANDLERS[args.mode](db, api, job_conf)
+    finally:
+        engine.dispose()
 
-    elif sys.argv[1] == 'coins_list':
-        upload_coin_list(postgres_conn, gecko_api, conf['data']['coins_list'])
 
-    elif sys.argv[1] == 'asset_platforms':
-        upload_asset_platforms(postgres_conn, gecko_api, conf['data']['asset_platforms'])
-
-    elif sys.argv[1] == 'categories_list':
-        upload_categories_list(postgres_conn, gecko_api, conf['data']['categories_list'])
-
-    elif sys.argv[1] == 'categories':
-        upload_categories(postgres_conn, gecko_api, conf['data']['categories'])
-
-    elif sys.argv[1] == 'exchanges_list':
-        upload_exchanges_list(postgres_conn, gecko_api, conf['data']['exchanges_list'])
-
-    elif sys.argv[1] == 'exchanges':
-        upload_exchanges(postgres_conn, gecko_api, conf['data']['exchanges'])
-
-    elif sys.argv[1] == 'derivatives':
-        upload_derivatives(postgres_conn, gecko_api, conf['data']['derivatives'])
-
-    elif sys.argv[1] == 'derivatives_exchanges':
-        upload_derivatives_exchanges(postgres_conn, gecko_api, conf['data']['derivatives_exchanges'])
-
-    elif sys.argv[1] == 'derivatives_exchanges_list':
-        upload_derivatives_exchanges_list(postgres_conn, gecko_api, conf['data']['derivatives_exchanges_list'])
-
-    elif sys.argv[1] == 'trending':
-        upload_trending(postgres_conn, gecko_api, conf['data']['trending'])
-
-    elif sys.argv[1] == 'global': 
-        upload_global(postgres_conn, gecko_api, conf['data']['global'])
-
-    elif sys.argv[1] == 'nfts_list':
-        upload_nfts_list(postgres_conn, gecko_api, conf['data']['nfts_list'])
-    
-    elif sys.argv[1] == 'companies_treasury':
-        upload_companies_treasury(postgres_conn, gecko_api, conf['data']['companies_treasury'])
-
-        
 if __name__ == "__main__":
     main()

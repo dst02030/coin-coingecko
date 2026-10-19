@@ -1,15 +1,12 @@
-# SQL README
+# PostgreSQL 초기화
 
-# 개요
-본 레포는 SQL 쿼리문들을 담고 있습니다.
+`create_tables.sh`는 환경변수 `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`을 사용합니다.
+대상 DB를 미리 만든 뒤 실행하면 해당 DB에 스키마와 테이블을 생성합니다.
+DB 이름을 `coins`로 강제 변경하지 않으며, SQL 오류 시 즉시 종료합니다.
 
+```bash
+bash src/sql/create_tables.sh
+```
 
-# ENV variables
-* 환경 변수는 직접 설정하거나, gitlab CI/CD과정에서 설정하여 실행할 수 있습니다.
-
-* 변수 리스트
-    * `dev_host`: 개발서버 호스트명
-    * `dev_port`: 운영서버 포트명
-    * `prod_host`: 운영서버 호스트명
-    * `prod_port`: 운영서버 포트명
-    * `max_memory_usage`: 클릭하우스 쿼리 실행 시 최대 사용 메모리량
+`database_coins.sql`은 이름이 `coins`인 DB를 처음 만들 때만 수동으로 실행하는 예시입니다.
+`CREATE TABLE IF NOT EXISTS`는 기존 테이블의 컬럼을 변경하지 않습니다.

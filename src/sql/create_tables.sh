@@ -1,26 +1,10 @@
 #!/bin/bash
-host=172.20.10.3
-port=5432
-username=postgres
-database=$DB_NAME
-echo $database
-
-file_path="$(cd "$(dirname "$0")" && pwd)/create_sql"
-
-
-echo "[START] Create schemas in $host:$port.."
-
-schemas="$(ls "$file_path"/schema_*)" 
-tables="$(ls "$file_path"/table_*)"
-paths=("${schemas[@]}" "${tables[@]}")
-
-# CREATE STARTS
-for file_path in ${paths[@]};
-do
-    echo "#######################################################################################"
-    echo "`date -Iseconds` [START] CREATE table: $file_path"
-    
-    echo "PGPASSWORD='******' psql -h $host -p $port -U $username"
-    echo $(PGPASSWORD=$DB_PASSWORD psql -h $host -p $port -U $username -f $file_path -d $database)
+set -euo pipefail
+: "${DB_HOST:?Set DB_HOST}" "${DB_PORT:?Set DB_PORT}" "${DB_USER:?Set DB_USER}"
+: "${DB_NAME:?Set DB_NAME}" "${DB_PASSWORD:?Set DB_PASSWORD}"
+file_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/create_sql"
+export PGPASSWORD="$DB_PASSWORD"
+for sql in "$file_path"/schema_*.sql "$file_path"/table_*.sql; do
+    psql -X --set=ON_ERROR_STOP=1 --host="$DB_HOST" --port="$DB_PORT" \
+        --username="$DB_USER" --dbname="$DB_NAME" --file="$sql"
 done
-
